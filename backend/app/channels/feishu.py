@@ -566,9 +566,7 @@ class FeishuChannel(Channel):
         if running_card_task:
             return running_card_task
 
-        running_card_task = asyncio.create_task(
-            self._create_running_card(source_message_id, text, metadata=metadata)
-        )
+        running_card_task = asyncio.create_task(self._create_running_card(source_message_id, text, metadata=metadata))
         self._running_card_tasks[source_message_id] = running_card_task
         running_card_task.add_done_callback(lambda done_task, mid=source_message_id: self._finalize_running_card_task(mid, done_task))
         return running_card_task

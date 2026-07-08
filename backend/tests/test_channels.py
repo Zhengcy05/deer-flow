@@ -1895,13 +1895,7 @@ class TestChannelManager:
                 )
             )
 
-            await _wait_for(
-                lambda: any(
-                    message.thread_ts == "om-source-2"
-                    and message.text.startswith("Queued behind another request")
-                    for message in outbound_received
-                )
-            )
+            await _wait_for(lambda: any(message.thread_ts == "om-source-2" and message.text.startswith("Queued behind another request") for message in outbound_received))
             assert second_started.is_set() is False
 
             release_first.set()
