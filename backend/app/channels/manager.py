@@ -29,6 +29,10 @@ from app.channels.message_bus import (
 from app.channels.run_policy import CHANNEL_RUN_POLICY, ChannelRunPolicy
 from app.channels.store import ChannelStore
 from app.gateway.csrf_middleware import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, generate_csrf_token
+
+# Import built-in webhook run-policy registrars eagerly so direct
+# ChannelManager construction sees the same policy map as gateway bootstrap.
+from app.gateway.github import run_policy as _github_run_policy  # noqa: F401
 from app.gateway.internal_auth import create_internal_auth_headers
 from deerflow.config.agents_config import load_agent_config
 from deerflow.config.paths import make_safe_user_id
@@ -175,6 +179,14 @@ class _BoundIdentityRejection:
     # channel senders preserve per-connection context without trusting the
     # rejected inbound identity assertion.
     outbound_owner_user_id: str | None = None
+
+
+@dataclass(slots=True)
+class _SerializedThreadRunState:
+    """Per-thread lock state for channels that queue same-thread turns."""
+
+    lock: asyncio.Lock
+    waiters: int = 0
 
 
 def _is_thread_busy_error(exc: BaseException | None) -> bool:
@@ -814,6 +826,9 @@ class ChannelManager:
         # Per-conversation locks so concurrent inbound messages for the same
         # chat don't race to create duplicate threads (see _get_or_create_thread).
         self._thread_create_locks: dict[tuple[str, str, str | None], asyncio.Lock] = {}
+        # Per-thread run locks for channels that want in-manager serialization
+        # instead of surfacing the runtime's generic busy reply.
+        self._serialized_thread_runs: dict[tuple[str, str], _SerializedThreadRunState] = {}
         self._skill_storage: SkillStorage | None = None
         self._csrf_token = generate_csrf_token()
         self._semaphore: asyncio.Semaphore | None = None
@@ -840,6 +855,60 @@ class ChannelManager:
         users_layer = _as_dict(channel_layer.get("users"))
         user_layer = _as_dict(users_layer.get(msg.user_id))
         return channel_layer, user_layer
+
+    @staticmethod
+    def _channel_requires_serial_thread_runs(channel_name: str) -> bool:
+        return channel_name == "feishu"
+
+    def _begin_serialized_thread_run(
+        self,
+        *,
+        channel_name: str,
+        thread_id: str,
+    ) -> tuple[_SerializedThreadRunState | None, bool]:
+        if not self._channel_requires_serial_thread_runs(channel_name):
+            return None, False
+
+        key = (channel_name, thread_id)
+        state = self._serialized_thread_runs.get(key)
+        if state is None:
+            state = _SerializedThreadRunState(lock=asyncio.Lock())
+            self._serialized_thread_runs[key] = state
+        queued = state.lock.locked()
+        state.waiters += 1
+        return state, queued
+
+    def _finish_serialized_thread_run(
+        self,
+        *,
+        channel_name: str,
+        thread_id: str,
+        state: _SerializedThreadRunState | None,
+        lock_acquired: bool,
+    ) -> None:
+        if state is None:
+            return
+
+        if lock_acquired:
+            state.lock.release()
+        state.waiters -= 1
+        if state.waiters == 0 and not state.lock.locked():
+            self._serialized_thread_runs.pop((channel_name, thread_id), None)
+
+    async def _publish_progress_update(self, msg: InboundMessage, thread_id: str, text: str) -> None:
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                channel_name=msg.channel_name,
+                chat_id=msg.chat_id,
+                thread_id=thread_id,
+                text=text,
+                is_final=False,
+                thread_ts=msg.thread_ts,
+                connection_id=msg.connection_id,
+                owner_user_id=msg.owner_user_id,
+                metadata=_response_metadata(msg.metadata),
+            )
+        )
 
     def _resolve_run_params(self, msg: InboundMessage, thread_id: str) -> tuple[str, dict[str, Any], dict[str, Any]]:
         channel_layer, user_layer = self._resolve_session_layer(msg)
@@ -1438,6 +1507,50 @@ class ChannelManager:
         if not created:
             logger.info("[Manager] reusing thread: thread_id=%s for topic_id=%s", thread_id, msg.topic_id)
             await self._update_thread_channel_metadata(client, msg, thread_id)
+
+        serial_state, queued = self._begin_serialized_thread_run(
+            channel_name=msg.channel_name,
+            thread_id=thread_id,
+        )
+        serial_lock_acquired = False
+        if queued:
+            await self._publish_progress_update(
+                msg,
+                thread_id,
+                "Queued behind another request in this conversation. I’ll start working on this as soon as it finishes.",
+            )
+        if serial_state is not None:
+            await serial_state.lock.acquire()
+            serial_lock_acquired = True
+        try:
+            if queued:
+                await self._publish_progress_update(msg, thread_id, "thinking...")
+            await self._handle_chat_on_thread(
+                client,
+                msg,
+                thread_id,
+                extra_context=extra_context,
+                storage_user_id=storage_user_id,
+            )
+        finally:
+            self._finish_serialized_thread_run(
+                channel_name=msg.channel_name,
+                thread_id=thread_id,
+                state=serial_state,
+                lock_acquired=serial_lock_acquired,
+            )
+
+    async def _handle_chat_on_thread(
+        self,
+        client,
+        msg: InboundMessage,
+        thread_id: str,
+        *,
+        extra_context: dict[str, Any] | None = None,
+        storage_user_id: str | None = None,
+    ) -> None:
+        if storage_user_id is None:
+            storage_user_id = _channel_storage_user_id(msg)
 
         assistant_id, run_config, run_context = self._resolve_run_params(msg, thread_id)
 
