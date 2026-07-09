@@ -1912,6 +1912,56 @@ class TestChannelManager:
 
         _run(go())
 
+    def test_handle_feishu_queue_waiter_cleanup_on_cancelled_progress_publish(self):
+        from app.channels.manager import ChannelManager
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            manager = ChannelManager(bus=bus, store=store)
+
+            msg = InboundMessage(
+                channel_name="feishu",
+                chat_id="chat1",
+                user_id="user1",
+                text="second",
+                topic_id="topic-1",
+                thread_ts="om-source-2",
+            )
+
+            thread_id = "feishu-thread-1"
+            serial_state, _ = manager._begin_serialized_thread_run(
+                channel_name="feishu",
+                thread_id=thread_id,
+            )
+            assert serial_state is not None
+            await serial_state.lock.acquire()
+
+            manager._get_client = MagicMock(return_value=object())
+            manager._get_or_create_thread = AsyncMock(return_value=(thread_id, False))
+            manager._update_thread_channel_metadata = AsyncMock()
+            manager._publish_progress_update = AsyncMock(side_effect=asyncio.CancelledError())
+            manager._handle_chat_on_thread = AsyncMock()
+
+            with pytest.raises(asyncio.CancelledError):
+                await manager._handle_chat(msg, bound_identity_checked=True)
+
+            leaked_state = manager._serialized_thread_runs.get(("feishu", thread_id))
+            assert leaked_state is serial_state
+            assert leaked_state.waiters == 1
+            assert leaked_state.lock.locked() is True
+            manager._handle_chat_on_thread.assert_not_awaited()
+
+            manager._finish_serialized_thread_run(
+                channel_name="feishu",
+                thread_id=thread_id,
+                state=serial_state,
+                lock_acquired=True,
+            )
+            assert ("feishu", thread_id) not in manager._serialized_thread_runs
+
+        _run(go())
+
     def test_handle_feishu_different_threads_can_stream_concurrently(self, monkeypatch):
         from app.channels.manager import ChannelManager
 
@@ -3299,6 +3349,16 @@ class TestGithubFireAndForget:
         from app.channels.run_policy import ChannelRunPolicy
 
         assert ChannelRunPolicy().fire_and_forget is False
+        assert ChannelRunPolicy().serialize_thread_runs is False
+
+    def test_feishu_channel_policy_opts_into_serialized_thread_runs(self):
+        """Feishu's queue-same-thread behavior should be policy-driven."""
+        import app.channels.feishu_run_policy  # noqa: F401
+        from app.channels.run_policy import CHANNEL_RUN_POLICY
+
+        feishu_policy = CHANNEL_RUN_POLICY.get("feishu")
+        assert feishu_policy is not None
+        assert feishu_policy.serialize_thread_runs is True
 
     def test_github_channel_policy_opts_into_fire_and_forget(self):
         """The GitHub channel must register ``fire_and_forget=True``. This is

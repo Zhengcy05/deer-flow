@@ -17,6 +17,7 @@ from urllib.parse import quote
 import httpx
 from langgraph_sdk.errors import ConflictError
 
+from app.channels import feishu_run_policy as _feishu_run_policy  # noqa: F401
 from app.channels.commands import KNOWN_CHANNEL_COMMANDS
 from app.channels.message_bus import (
     PENDING_CLARIFICATION_METADATA_KEY,
@@ -30,7 +31,7 @@ from app.channels.run_policy import CHANNEL_RUN_POLICY, ChannelRunPolicy
 from app.channels.store import ChannelStore
 from app.gateway.csrf_middleware import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, generate_csrf_token
 
-# Import built-in webhook run-policy registrars eagerly so direct
+# Import built-in channel run-policy registrars eagerly so direct
 # ChannelManager construction sees the same policy map as gateway bootstrap.
 from app.gateway.github import run_policy as _github_run_policy  # noqa: F401
 from app.gateway.internal_auth import create_internal_auth_headers
@@ -856,17 +857,14 @@ class ChannelManager:
         user_layer = _as_dict(users_layer.get(msg.user_id))
         return channel_layer, user_layer
 
-    @staticmethod
-    def _channel_requires_serial_thread_runs(channel_name: str) -> bool:
-        return channel_name == "feishu"
-
     def _begin_serialized_thread_run(
         self,
         *,
         channel_name: str,
         thread_id: str,
     ) -> tuple[_SerializedThreadRunState | None, bool]:
-        if not self._channel_requires_serial_thread_runs(channel_name):
+        policy = CHANNEL_RUN_POLICY.get(channel_name)
+        if policy is None or not policy.serialize_thread_runs:
             return None, False
 
         key = (channel_name, thread_id)
@@ -1513,16 +1511,16 @@ class ChannelManager:
             thread_id=thread_id,
         )
         serial_lock_acquired = False
-        if queued:
-            await self._publish_progress_update(
-                msg,
-                thread_id,
-                "Queued behind another request in this conversation. I’ll start working on this as soon as it finishes.",
-            )
-        if serial_state is not None:
-            await serial_state.lock.acquire()
-            serial_lock_acquired = True
         try:
+            if queued:
+                await self._publish_progress_update(
+                    msg,
+                    thread_id,
+                    "Queued behind another request in this conversation. I’ll start working on this as soon as it finishes.",
+                )
+            if serial_state is not None:
+                await serial_state.lock.acquire()
+                serial_lock_acquired = True
             if queued:
                 await self._publish_progress_update(msg, thread_id, "thinking...")
             await self._handle_chat_on_thread(
