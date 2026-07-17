@@ -104,6 +104,16 @@ def test_nginx_defers_cors_to_gateway_allowlist():
         assert "if ($request_method = 'OPTIONS')" not in content
 
 
+def test_nginx_frontend_upgrade_header_is_conditional():
+    for path in ("docker/nginx/nginx.local.conf", "docker/nginx/nginx.conf"):
+        content = _read(path)
+
+        assert "map $http_upgrade $connection_upgrade" in content
+        assert "proxy_set_header Upgrade $http_upgrade;" in content
+        assert "proxy_set_header Connection $connection_upgrade;" in content
+        assert "proxy_set_header Connection 'upgrade';" not in content
+
+
 def test_gateway_cors_configuration_uses_gateway_allowlist():
     gateway_config = _read("backend/app/gateway/config.py")
     gateway_app = _read("backend/app/gateway/app.py")
