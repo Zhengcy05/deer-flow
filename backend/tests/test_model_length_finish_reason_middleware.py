@@ -1,5 +1,6 @@
 """Unit tests for ModelLengthFinishReasonMiddleware."""
 
+import logging
 from unittest.mock import MagicMock
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -8,6 +9,8 @@ from deerflow.agents.middlewares.model_length_finish_reason_middleware import (
     MODEL_LENGTH_CAPPED_STOP_REASON,
     ModelLengthFinishReasonMiddleware,
 )
+
+_MW_LOGGER = "deerflow.agents.middlewares.model_length_finish_reason_middleware"
 
 
 def _runtime(run_id: str = "run-1"):
@@ -83,6 +86,30 @@ def test_anthropic_max_tokens_stop_reason_records_stop_reason():
     assert runtime.context["stop_reason"] == MODEL_LENGTH_CAPPED_STOP_REASON
 
 
+def test_length_cap_detection_logs_observability_fields(caplog):
+    mw = ModelLengthFinishReasonMiddleware()
+    runtime = _runtime(run_id="run-observe")
+    msg = AIMessage(
+        id="msg-1",
+        content="partial",
+        response_metadata={"finish_reason": "length"},
+    )
+
+    with caplog.at_level(logging.INFO, logger=_MW_LOGGER):
+        assert mw._apply({"messages": [msg]}, runtime) is None
+
+    records = [record for record in caplog.records if record.message == "Provider model length cap detected"]
+    assert len(records) == 1
+    record = records[0]
+    assert record.thread_id == "thread-1"
+    assert record.run_id == "run-observe"
+    assert record.message_id == "msg-1"
+    assert record.detector == "openai_compatible_length"
+    assert record.reason_field == "finish_reason"
+    assert record.reason_value == "length"
+    assert record.stamped_stop_reason is True
+
+
 def test_finish_reason_length_with_tool_calls_passes_through():
     mw = ModelLengthFinishReasonMiddleware()
     runtime = _runtime()
@@ -102,14 +129,19 @@ def test_finish_reason_length_with_tool_calls_passes_through():
     assert "stop_reason" not in runtime.context
 
 
-def test_existing_stop_reason_is_not_overwritten():
+def test_existing_stop_reason_is_not_overwritten(caplog):
     mw = ModelLengthFinishReasonMiddleware()
     runtime = _runtime()
     runtime.context["stop_reason"] = "token_capped"
     msg = AIMessage(content="partial", response_metadata={"finish_reason": "length"})
 
-    assert mw._apply({"messages": [msg]}, runtime) is None
+    with caplog.at_level(logging.INFO, logger=_MW_LOGGER):
+        assert mw._apply({"messages": [msg]}, runtime) is None
+
     assert runtime.context["stop_reason"] == "token_capped"
+    records = [record for record in caplog.records if record.message == "Provider model length cap detected"]
+    assert len(records) == 1
+    assert records[0].stamped_stop_reason is False
 
 
 def test_non_ai_last_message_passes_through():

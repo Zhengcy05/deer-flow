@@ -76,12 +76,30 @@ class ModelLengthFinishReasonMiddleware(AgentMiddleware[AgentState]):
         if _has_tool_call_intent_or_error(last):
             return None
 
-        if self._detect(last) is None:
+        termination = self._detect(last)
+        if termination is None:
             return None
 
         ctx = getattr(runtime, "context", None)
+        thread_id = ctx.get("thread_id") if isinstance(ctx, dict) else None
+        run_id = ctx.get("run_id") if isinstance(ctx, dict) else None
+        stamped_stop_reason = False
         if isinstance(ctx, dict):
-            ctx.setdefault("stop_reason", MODEL_LENGTH_CAPPED_STOP_REASON)
+            if "stop_reason" not in ctx:
+                ctx["stop_reason"] = MODEL_LENGTH_CAPPED_STOP_REASON
+                stamped_stop_reason = True
+        logger.info(
+            "Provider model length cap detected",
+            extra={
+                "thread_id": thread_id,
+                "run_id": run_id,
+                "message_id": getattr(last, "id", None),
+                "detector": termination.detector,
+                "reason_field": termination.reason_field,
+                "reason_value": termination.reason_value,
+                "stamped_stop_reason": stamped_stop_reason,
+            },
+        )
         return None
 
     @override
