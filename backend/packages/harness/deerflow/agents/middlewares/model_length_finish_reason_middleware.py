@@ -13,8 +13,8 @@ This middleware keeps that boundary narrow:
   by length;
 - it never rewrites the assistant content or reparses XML-like text into a
   tool call;
-- it does not suppress tool execution, because there is no structured tool
-  call to validate or execute here.
+- it ignores any response that still carries tool-call intent or malformed
+  tool-call metadata, so only terminal text responses can be marked capped.
 
 """
 
@@ -59,7 +59,11 @@ def _has_tool_call_intent_or_error(message: AIMessage) -> bool:
 
 
 class ModelLengthFinishReasonMiddleware(AgentMiddleware[AgentState]):
-    """Record ``finish_reason=length`` without rewriting assistant content."""
+    """Record ``finish_reason=length`` for terminal text responses only.
+
+    If the last AIMessage still carries tool-call intent, this middleware
+    leaves it alone and lets the normal tool-handling path decide what to do.
+    """
 
     def __init__(self) -> None:
         super().__init__()
