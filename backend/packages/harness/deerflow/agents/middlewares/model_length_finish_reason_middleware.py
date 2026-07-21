@@ -10,7 +10,7 @@ completion when the provider has explicitly signaled truncation.
 
 This middleware keeps that boundary narrow:
 - it only marks a run-level stop reason when the final AIMessage is capped
-  by length;
+  by a provider length signal;
 - it never rewrites the assistant content or reparses XML-like text into a
   tool call;
 - it ignores any response that still carries tool-call intent or malformed
@@ -20,6 +20,7 @@ This middleware keeps that boundary narrow:
 
 from __future__ import annotations
 
+import logging
 import threading
 from typing import Any, override
 
@@ -29,26 +30,14 @@ from langchain_core.messages import AIMessage
 from langgraph.runtime import Runtime
 
 from deerflow.agents.middlewares._bounded_dict import BoundedDict
+from deerflow.agents.middlewares.model_length_termination_detectors import (
+    ModelLengthTermination,
+    ModelLengthTerminationDetector,
+    default_detectors,
+)
 
 MODEL_LENGTH_CAPPED_STOP_REASON = "model_length_capped"
-_LENGTH_FINISH_REASONS = frozenset({"length"})
-
-
-def _metadata_string(message: AIMessage, field_name: str) -> str | None:
-    """Read a string metadata value from LangChain's common provider fields."""
-    for container_name in ("response_metadata", "additional_kwargs"):
-        container = getattr(message, container_name, None) or {}
-        if not isinstance(container, dict):
-            continue
-        value = container.get(field_name)
-        if isinstance(value, str) and value:
-            return value
-    return None
-
-
-def _is_model_length_capped(message: AIMessage) -> bool:
-    finish_reason = _metadata_string(message, "finish_reason")
-    return finish_reason is not None and finish_reason.lower() in _LENGTH_FINISH_REASONS
+logger = logging.getLogger(__name__)
 
 
 def _has_tool_call_intent_or_error(message: AIMessage) -> bool:
@@ -59,14 +48,15 @@ def _has_tool_call_intent_or_error(message: AIMessage) -> bool:
 
 
 class ModelLengthFinishReasonMiddleware(AgentMiddleware[AgentState]):
-    """Record ``finish_reason=length`` for terminal text responses only.
+    """Record provider length caps for terminal text responses only.
 
     If the last AIMessage still carries tool-call intent, this middleware
     leaves it alone and lets the normal tool-handling path decide what to do.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, detectors: list[ModelLengthTerminationDetector] | None = None) -> None:
         super().__init__()
+        self._detectors: list[ModelLengthTerminationDetector] = list(detectors) if detectors else default_detectors()
         self._lock = threading.Lock()
         self._stop_reason: BoundedDict[str, str] = BoundedDict(1000)
 
@@ -82,6 +72,17 @@ class ModelLengthFinishReasonMiddleware(AgentMiddleware[AgentState]):
         with self._lock:
             return self._stop_reason.pop(run_id, None)
 
+    def _detect(self, message: AIMessage) -> ModelLengthTermination | None:
+        for detector in self._detectors:
+            try:
+                hit = detector.detect(message)
+            except Exception:  # noqa: BLE001 - provider detectors must not break a run
+                logger.exception("ModelLengthTerminationDetector %r raised; treating as no-match", getattr(detector, "name", type(detector).__name__))
+                continue
+            if hit is not None:
+                return hit
+        return None
+
     def _apply(self, state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
         messages = list(state.get("messages") or [])
         if not messages or not isinstance(messages[-1], AIMessage):
@@ -91,7 +92,7 @@ class ModelLengthFinishReasonMiddleware(AgentMiddleware[AgentState]):
         if _has_tool_call_intent_or_error(last):
             return None
 
-        if not _is_model_length_capped(last):
+        if self._detect(last) is None:
             return None
 
         run_id = self._get_run_id(runtime)

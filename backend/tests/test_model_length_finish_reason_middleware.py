@@ -59,6 +59,30 @@ def test_additional_kwargs_finish_reason_length_records_stop_reason():
     assert runtime.context["stop_reason"] == MODEL_LENGTH_CAPPED_STOP_REASON
 
 
+def test_gemini_max_tokens_finish_reason_records_stop_reason():
+    mw = ModelLengthFinishReasonMiddleware()
+    runtime = _runtime()
+    msg = AIMessage(
+        content="partial",
+        response_metadata={"finish_reason": "MAX_TOKENS"},
+    )
+
+    assert mw._apply({"messages": [msg]}, runtime) is None
+    assert runtime.context["stop_reason"] == MODEL_LENGTH_CAPPED_STOP_REASON
+
+
+def test_anthropic_max_tokens_stop_reason_records_stop_reason():
+    mw = ModelLengthFinishReasonMiddleware()
+    runtime = _runtime()
+    msg = AIMessage(
+        content="partial",
+        response_metadata={"stop_reason": "max_tokens"},
+    )
+
+    assert mw._apply({"messages": [msg]}, runtime) is None
+    assert runtime.context["stop_reason"] == MODEL_LENGTH_CAPPED_STOP_REASON
+
+
 def test_finish_reason_length_with_tool_calls_passes_through():
     mw = ModelLengthFinishReasonMiddleware()
     runtime = _runtime()
