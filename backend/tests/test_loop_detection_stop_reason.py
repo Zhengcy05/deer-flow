@@ -224,7 +224,7 @@ async def test_worker_surfaces_stop_reason_from_safety_finish_reason():
 @pytest.mark.asyncio
 async def test_worker_surfaces_stop_reason_from_model_length_finish_reason():
     """The worker persists ``stop_reason=model_length_capped`` when the
-    provider caps a non-empty response with ``finish_reason=length``."""
+    provider caps a terminal assistant response with ``finish_reason=length``."""
     from deerflow.agents.middlewares.model_length_finish_reason_middleware import ModelLengthFinishReasonMiddleware
 
     mw = ModelLengthFinishReasonMiddleware()

@@ -405,9 +405,10 @@ def build_middlewares(
     # allowing LangChain's no-tool-call router to end a silent successful run.
     middlewares.append(TerminalResponseMiddleware())
 
-    # A provider may also cap a non-empty response at the model output limit.
-    # Preserve the assistant content unchanged, but stamp a run-level stop_reason
-    # so Gateway consumers can tell a length-capped completion from a clean one.
+    # A provider may also cap the final assistant response at the model output
+    # limit. Preserve the assistant content unchanged, but stamp a run-level
+    # stop_reason so Gateway consumers can tell a length-capped completion from
+    # a clean one.
     middlewares.append(ModelLengthFinishReasonMiddleware())
 
     # SafetyFinishReasonMiddleware — suppress tool execution when the provider

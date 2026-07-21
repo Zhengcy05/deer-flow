@@ -3,10 +3,10 @@
 Background — see issue bytedance/deer-flow#4271.
 
 Some providers stop generation because the output budget is exhausted and
-surface that through ``finish_reason='length'`` while still returning a
-non-empty assistant message. DeerFlow should preserve that content for
-audit, but it should not silently treat the run as an uncapped clean
-completion when the provider has explicitly signaled truncation.
+surface that through ``finish_reason='length'`` while still returning assistant
+content. DeerFlow should preserve that content for audit, but it should not
+silently treat the run as an uncapped clean completion when the provider has
+explicitly signaled truncation.
 
 This middleware keeps that boundary narrow:
 - it only marks a run-level stop reason when the final AIMessage is capped
@@ -46,7 +46,7 @@ def _has_tool_call_intent_or_error(message: AIMessage) -> bool:
 
 
 class ModelLengthFinishReasonMiddleware(AgentMiddleware[AgentState]):
-    """Record provider length caps for terminal text responses only.
+    """Record provider length caps for terminal assistant responses only.
 
     If the last AIMessage still carries tool-call intent, this middleware
     leaves it alone and lets the normal tool-handling path decide what to do.
