@@ -51,6 +51,13 @@ def _is_model_length_capped(message: AIMessage) -> bool:
     return finish_reason is not None and finish_reason.lower() in _LENGTH_FINISH_REASONS
 
 
+def _has_tool_call_intent_or_error(message: AIMessage) -> bool:
+    if message.tool_calls or getattr(message, "invalid_tool_calls", None):
+        return True
+    additional_kwargs = message.additional_kwargs or {}
+    return bool(additional_kwargs.get("tool_calls") or additional_kwargs.get("function_call"))
+
+
 class ModelLengthFinishReasonMiddleware(AgentMiddleware[AgentState]):
     """Record ``finish_reason=length`` without rewriting assistant content."""
 
@@ -76,7 +83,11 @@ class ModelLengthFinishReasonMiddleware(AgentMiddleware[AgentState]):
         if not messages or not isinstance(messages[-1], AIMessage):
             return None
 
-        if not _is_model_length_capped(messages[-1]):
+        last = messages[-1]
+        if _has_tool_call_intent_or_error(last):
+            return None
+
+        if not _is_model_length_capped(last):
             return None
 
         run_id = self._get_run_id(runtime)

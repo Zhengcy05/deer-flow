@@ -59,6 +59,25 @@ def test_additional_kwargs_finish_reason_length_records_stop_reason():
     assert runtime.context["stop_reason"] == MODEL_LENGTH_CAPPED_STOP_REASON
 
 
+def test_finish_reason_length_with_tool_calls_passes_through():
+    mw = ModelLengthFinishReasonMiddleware()
+    runtime = _runtime()
+    msg = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "id": "call_write_1",
+                "name": "write_file",
+                "args": {"path": "/mnt/user-data/outputs/report.md", "content": "# partial"},
+            }
+        ],
+        response_metadata={"finish_reason": "length"},
+    )
+
+    assert mw._apply({"messages": [msg]}, runtime) is None
+    assert "stop_reason" not in runtime.context
+
+
 def test_existing_stop_reason_is_not_overwritten():
     mw = ModelLengthFinishReasonMiddleware()
     runtime = _runtime()
