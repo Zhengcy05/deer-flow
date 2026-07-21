@@ -110,7 +110,6 @@ def test_existing_stop_reason_is_not_overwritten():
 
     assert mw._apply({"messages": [msg]}, runtime) is None
     assert runtime.context["stop_reason"] == "token_capped"
-    assert mw.consume_stop_reason("run-1") == MODEL_LENGTH_CAPPED_STOP_REASON
 
 
 def test_non_ai_last_message_passes_through():

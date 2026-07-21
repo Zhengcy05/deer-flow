@@ -21,7 +21,6 @@ This middleware keeps that boundary narrow:
 from __future__ import annotations
 
 import logging
-import threading
 from typing import Any, override
 
 from langchain.agents import AgentState
@@ -29,7 +28,6 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import AIMessage
 from langgraph.runtime import Runtime
 
-from deerflow.agents.middlewares._bounded_dict import BoundedDict
 from deerflow.agents.middlewares.model_length_termination_detectors import (
     ModelLengthTermination,
     ModelLengthTerminationDetector,
@@ -57,20 +55,6 @@ class ModelLengthFinishReasonMiddleware(AgentMiddleware[AgentState]):
     def __init__(self, detectors: list[ModelLengthTerminationDetector] | None = None) -> None:
         super().__init__()
         self._detectors: list[ModelLengthTerminationDetector] = list(detectors) if detectors else default_detectors()
-        self._lock = threading.Lock()
-        self._stop_reason: BoundedDict[str, str] = BoundedDict(1000)
-
-    @staticmethod
-    def _get_run_id(runtime: Runtime) -> str:
-        ctx = getattr(runtime, "context", None)
-        if isinstance(ctx, dict) and "run_id" in ctx:
-            return str(ctx["run_id"])
-        return str(id(runtime))
-
-    def consume_stop_reason(self, run_id: str | None) -> str | None:
-        """Pop the recorded reason for integrations that collect guard caps."""
-        with self._lock:
-            return self._stop_reason.pop(run_id, None)
 
     def _detect(self, message: AIMessage) -> ModelLengthTermination | None:
         for detector in self._detectors:
@@ -94,10 +78,6 @@ class ModelLengthFinishReasonMiddleware(AgentMiddleware[AgentState]):
 
         if self._detect(last) is None:
             return None
-
-        run_id = self._get_run_id(runtime)
-        with self._lock:
-            self._stop_reason[run_id] = MODEL_LENGTH_CAPPED_STOP_REASON
 
         ctx = getattr(runtime, "context", None)
         if isinstance(ctx, dict):
