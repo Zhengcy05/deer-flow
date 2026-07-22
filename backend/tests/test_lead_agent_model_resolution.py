@@ -808,10 +808,11 @@ def test_build_middlewares_injects_configured_extension_middlewares(monkeypatch)
     )
 
     middleware_types = [type(m).__name__ for m in middlewares]
-    assert middleware_types[-5:] == [
+    assert middleware_types[-6:] == [
         "ConfiguredGuardMiddleware",
         "ConfiguredAuditMiddleware",
         "TerminalResponseMiddleware",
+        "ModelLengthFinishReasonMiddleware",
         "SafetyFinishReasonMiddleware",
         "ClarificationMiddleware",
     ]
