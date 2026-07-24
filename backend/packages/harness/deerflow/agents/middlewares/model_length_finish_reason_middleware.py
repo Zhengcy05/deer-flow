@@ -10,11 +10,12 @@ explicitly signaled truncation.
 
 This middleware keeps that boundary narrow:
 - it only marks a run-level stop reason when the final AIMessage is capped
-  by a provider length signal;
+  by a provider length signal and still has visible content;
 - it never rewrites the assistant content or reparses XML-like text into a
   tool call;
-- it ignores any response that still carries tool-call intent or malformed
-  tool-call metadata, so only terminal text responses can be marked capped.
+- it ignores any response that still carries tool-call intent, malformed
+  tool-call metadata, or no visible content, so only terminal assistant
+  responses with visible content can be marked capped.
 
 """
 
@@ -45,8 +46,23 @@ def _has_tool_call_intent_or_error(message: AIMessage) -> bool:
     return bool(additional_kwargs.get("tool_calls") or additional_kwargs.get("function_call"))
 
 
+def _has_visible_content(message: AIMessage) -> bool:
+    content = message.content
+    if isinstance(content, str):
+        return bool(content.strip())
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, str) and block.strip():
+                return True
+            if isinstance(block, dict) and block.get("type") in {"text", "output_text"}:
+                text = block.get("text")
+                if isinstance(text, str) and text.strip():
+                    return True
+    return False
+
+
 class ModelLengthFinishReasonMiddleware(AgentMiddleware[AgentState]):
-    """Record provider length caps for terminal assistant responses only.
+    """Record provider length caps for terminal assistant responses with content.
 
     If the last AIMessage still carries tool-call intent, this middleware
     leaves it alone and lets the normal tool-handling path decide what to do.
@@ -75,6 +91,8 @@ class ModelLengthFinishReasonMiddleware(AgentMiddleware[AgentState]):
         last = messages[-1]
         if _has_tool_call_intent_or_error(last):
             return None
+        if not _has_visible_content(last):
+            return None
 
         termination = self._detect(last)
         if termination is None:
@@ -85,6 +103,7 @@ class ModelLengthFinishReasonMiddleware(AgentMiddleware[AgentState]):
         run_id = ctx.get("run_id") if isinstance(ctx, dict) else None
         stamped_stop_reason = False
         if isinstance(ctx, dict):
+            # Preserve any earlier cap reason carried across hidden continuation turns.
             if "stop_reason" not in ctx:
                 ctx["stop_reason"] = MODEL_LENGTH_CAPPED_STOP_REASON
                 stamped_stop_reason = True

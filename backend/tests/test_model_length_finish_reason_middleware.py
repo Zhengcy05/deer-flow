@@ -129,6 +129,15 @@ def test_finish_reason_length_with_tool_calls_passes_through():
     assert "stop_reason" not in runtime.context
 
 
+def test_empty_finish_reason_length_passes_through_for_terminal_response_recovery():
+    mw = ModelLengthFinishReasonMiddleware()
+    runtime = _runtime()
+    msg = AIMessage(content="", response_metadata={"finish_reason": "length"})
+
+    assert mw._apply({"messages": [msg]}, runtime) is None
+    assert "stop_reason" not in runtime.context
+
+
 def test_existing_stop_reason_is_not_overwritten(caplog):
     mw = ModelLengthFinishReasonMiddleware()
     runtime = _runtime()
